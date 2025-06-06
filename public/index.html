@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Article Service</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <header class="header">
+            <h1>Article Service</h1>
+            <nav class="nav">
+                <button id="home-btn" class="nav-btn active">Articles</button>
+                <button id="create-btn" class="nav-btn" style="display: none;">Create Article</button>
+                <button id="moderate-btn" class="nav-btn" style="display: none;">Moderate</button>
+                <div class="auth-section">
+                    <div id="login-section">
+                        <input type="text" id="username" placeholder="Username" autocomplete="username">
+                        <input type="password" id="password" placeholder="Password" autocomplete="current-password">
+                        <button id="login-btn">Login</button>
+                    </div>
+                    <div id="user-section" style="display: none;">
+                        <span id="user-info"></span>
+                        <button id="logout-btn">Logout</button>
+                    </div>
+                </div>
+            </nav>
+        </header>
+
+        <main class="main">
+            <div id="loading" class="loading" style="display: none;">
+                <div class="spinner"></div>
+                <p>Loading...</p>
+            </div>
+
+            <div id="home-view" class="view">
+                <h2>Published Articles</h2>
+                <div id="articles-list" class="articles-list"></div>
+            </div>
+
+            <div id="create-view" class="view" style="display: none;">
+                <h2>Create New Article</h2>
+                <form id="create-form" class="article-form">
+                    <input type="text" id="create-title" placeholder="Article Title" required>
+                    <textarea id="create-content" placeholder="Article Content (max 2000 characters)" maxlength="2000" required></textarea>
+                    <div class="form-actions">
+                        <span id="create-char-count" class="char-count">0/2000</span>
+                        <button type="submit">Create Article</button>
+                    </div>
+                </form>
+            </div>
+
+            <div id="edit-view" class="view" style="display: none;">
+                <h2>Edit Article</h2>
+                <form id="edit-form" class="article-form">
+                    <input type="text" id="edit-title" placeholder="Article Title" required>
+                    <textarea id="edit-content" placeholder="Article Content (max 2000 characters)" maxlength="2000" required></textarea>
+                    <div class="form-actions">
+                        <span id="edit-char-count" class="char-count">0/2000</span>
+                        <button type="submit">Update Article</button>
+                        <button type="button" id="cancel-edit-btn">Cancel</button>
+                    </div>
+                </form>
+            </div>
+
+            <div id="moderate-view" class="view" style="display: none;">
+                <h2>Articles Pending Moderation</h2>
+                <div id="pending-articles" class="articles-list"></div>
+            </div>
+        </main>
+
+        <div id="message" class="message" style="display: none;"></div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
