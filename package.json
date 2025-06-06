@@ -1,7 +1,6 @@
-
 {
   "name": "article-service",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Article management service with moderation system",
   "main": "server.js",
   "scripts": {
@@ -15,7 +14,8 @@
   "license": "MIT",
   "dependencies": {
     "express": "^4.18.2",
-    "cors": "^2.8.5"
+    "cors": "^2.8.5",
+    "ws": "^8.14.2"
   },
   "devDependencies": {
     "eslint": "^8.57.0"

@@ -1,8 +1,13 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const http = require('http');
+const WebSocket = require('ws');
 
 const app = express();
+const server = http.createServer(app);
+const wss = new WebSocket.Server({ server });
+
 const PORT = process.env.PORT || 3000;
 
 app.use(cors());
@@ -44,6 +49,179 @@ let users = [
 
 let currentUser = null;
 let nextArticleId = 3;
+
+// WebSocket connection management
+const clients = new Map();
+const activeEditors = new Map(); // Track who is editing what article
+
+// WebSocket connection handler
+wss.on('connection', (ws, req) => {
+  console.log('New WebSocket connection');
+  
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      handleWebSocketMessage(ws, data);
+    } catch (error) {
+      console.error('Invalid WebSocket message:', error);
+    }
+  });
+
+  ws.on('close', () => {
+    // Clean up when client disconnects
+    for (const [clientId, client] of clients.entries()) {
+      if (client.ws === ws) {
+        clients.delete(clientId);
+        // Remove from active editors
+        for (const [articleId, editors] of activeEditors.entries()) {
+          const index = editors.findIndex(e => e.clientId === clientId);
+          if (index !== -1) {
+            editors.splice(index, 1);
+            if (editors.length === 0) {
+              activeEditors.delete(articleId);
+            } else {
+              broadcastEditingStatus(articleId);
+            }
+          }
+        }
+        break;
+      }
+    }
+    console.log('WebSocket connection closed');
+  });
+});
+
+function handleWebSocketMessage(ws, data) {
+  const { type, payload } = data;
+
+  switch (type) {
+    case 'register':
+      registerClient(ws, payload);
+      break;
+    case 'start_editing':
+      handleStartEditing(payload);
+      break;
+    case 'stop_editing':
+      handleStopEditing(payload);
+      break;
+    case 'ping':
+      ws.send(JSON.stringify({ type: 'pong' }));
+      break;
+  }
+}
+
+function registerClient(ws, payload) {
+  const clientId = generateClientId();
+  clients.set(clientId, {
+    ws,
+    user: payload.user,
+    connectedAt: new Date()
+  });
+  
+  ws.send(JSON.stringify({
+    type: 'registered',
+    payload: { clientId }
+  }));
+}
+
+function handleStartEditing(payload) {
+  const { clientId, articleId } = payload;
+  const client = clients.get(clientId);
+  
+  if (!client) return;
+
+  if (!activeEditors.has(articleId)) {
+    activeEditors.set(articleId, []);
+  }
+  
+  const editors = activeEditors.get(articleId);
+  const existingEditor = editors.find(e => e.clientId === clientId);
+  
+  if (!existingEditor) {
+    editors.push({
+      clientId,
+      username: client.user.username,
+      startedAt: new Date()
+    });
+    broadcastEditingStatus(articleId);
+  }
+}
+
+function handleStopEditing(payload) {
+  const { clientId, articleId } = payload;
+  
+  if (!activeEditors.has(articleId)) return;
+  
+  const editors = activeEditors.get(articleId);
+  const index = editors.findIndex(e => e.clientId === clientId);
+  
+  if (index !== -1) {
+    editors.splice(index, 1);
+    if (editors.length === 0) {
+      activeEditors.delete(articleId);
+    }
+    broadcastEditingStatus(articleId);
+  }
+}
+
+function broadcastEditingStatus(articleId) {
+  const editors = activeEditors.get(articleId) || [];
+  const message = {
+    type: 'editing_status',
+    payload: {
+      articleId,
+      editors: editors.map(e => ({
+        username: e.username,
+        startedAt: e.startedAt
+      }))
+    }
+  };
+
+  broadcast(message);
+}
+
+function broadcast(message, excludeClientId = null) {
+  const messageStr = JSON.stringify(message);
+  
+  for (const [clientId, client] of clients.entries()) {
+    if (clientId !== excludeClientId && client.ws.readyState === WebSocket.OPEN) {
+      client.ws.send(messageStr);
+    }
+  }
+}
+
+function notifyArticleUpdate(article, action) {
+  const message = {
+    type: 'article_update',
+    payload: {
+      action, // 'created', 'updated', 'approved', 'rejected'
+      article
+    }
+  };
+  
+  broadcast(message);
+}
+
+function notifyModerators(message, data = null) {
+  const notification = {
+    type: 'moderator_notification',
+    payload: {
+      message,
+      data,
+      timestamp: new Date().toISOString()
+    }
+  };
+
+  for (const [clientId, client] of clients.entries()) {
+    if (client.user && client.user.role === 'moderator' && client.ws.readyState === WebSocket.OPEN) {
+      client.ws.send(JSON.stringify(notification));
+    }
+  }
+}
+
+function generateClientId() {
+  return Math.random().toString(36).substr(2, 9) + Date.now().toString(36);
+}
 
 app.get('/api/articles', (req, res) => {
   const publicArticles = articles
@@ -157,6 +335,10 @@ app.post('/api/articles', (req, res) => {
 
   articles.push(newArticle);
 
+  // Notify about new article creation
+  notifyModerators('New article submitted for approval', newArticle);
+  notifyArticleUpdate(newArticle, 'created');
+
   res.status(201).json({
     success: true,
     data: newArticle
@@ -201,6 +383,12 @@ app.put('/api/articles/:id', (req, res) => {
   
   article.updatedAt = new Date().toISOString();
 
+  // Notify about article update
+  if (article.status === 'published') {
+    notifyModerators('Article edit submitted for approval', article);
+  }
+  notifyArticleUpdate(article, 'updated');
+
   res.json({
     success: true,
     message: article.status === 'published' 
@@ -239,6 +427,9 @@ app.post('/api/articles/:id/approve', (req, res) => {
   article.status = 'published';
   article.updatedAt = new Date().toISOString();
 
+  // Notify about article approval
+  notifyArticleUpdate(article, 'approved');
+
   res.json({
     success: true,
     message: 'Article approved',
@@ -274,6 +465,9 @@ app.post('/api/articles/:id/reject', (req, res) => {
 
   article.updatedAt = new Date().toISOString();
 
+  // Notify about article rejection
+  notifyArticleUpdate(article, 'rejected');
+
   res.json({
     success: true,
     message: 'Article rejected'
@@ -284,8 +478,9 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
-app.listen(PORT, () => {
+server.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
+  console.log('WebSocket server enabled');
   console.log('Available users:');
   console.log('- admin/admin123 (moderator)');
   console.log('- editor/editor123 (user)');

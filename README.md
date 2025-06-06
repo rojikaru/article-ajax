@@ -141,7 +141,7 @@ The system handles concurrent editing scenarios by:
 
 ## License
 
-MIT License
+MIT License  
 See [LICENSE](LICENSE) for details.
 
 ## Contributing

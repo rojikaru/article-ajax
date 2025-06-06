@@ -3,6 +3,12 @@ class ArticleService {
     this.baseURL = '/api';
     this.currentUser = null;
     this.currentArticle = null;
+    this.websocket = null;
+    this.clientId = null;
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+    this.currentlyEditing = null;
+    this.heartbeatInterval = null;
     this.init();
   }
 
@@ -10,6 +16,7 @@ class ArticleService {
     this.setupEventListeners();
     await this.checkAuth();
     await this.loadArticles();
+    this.setupWebSocket();
   }
 
   setupEventListeners() {
@@ -46,6 +53,162 @@ class ArticleService {
     passwordInput.addEventListener('keypress', (e) => {
       if (e.key === 'Enter') this.login();
     });
+
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.currentlyEditing) {
+        this.stopEditing();
+      }
+    });
+
+    window.addEventListener('beforeunload', () => {
+      if (this.currentlyEditing) {
+        this.stopEditing();
+      }
+      if (this.websocket) {
+        this.websocket.close();
+      }
+    });
+  }
+
+  setupWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    this.websocket = new WebSocket(`${protocol}//${host}/ws`);
+
+    this.websocket.onopen = () => {
+      console.log('WebSocket connected');
+      this.reconnectAttempts = 0;
+      
+      // Register client if already logged in
+      if (this.currentUser) {
+        this.registerWebSocketClient();
+      }
+      
+      // Start heartbeat
+      this.heartbeatInterval = setInterval(() => {
+        if (this.websocket.readyState === WebSocket.OPEN) {
+          this.websocket.send(JSON.stringify({ type: 'ping' }));
+        }
+      }, 30000);
+    };
+
+    this.websocket.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        this.handleWebSocketMessage(message);
+      } catch (error) {
+        console.error('Error parsing WebSocket message:', error);
+      }
+    };
+
+    this.websocket.onclose = () => {
+      console.log('WebSocket disconnected');
+      clearInterval(this.heartbeatInterval);
+      
+      if (this.currentlyEditing) {
+        this.stopEditing();
+      }
+      
+      // Attempt to reconnect
+      if (this.reconnectAttempts < this.maxReconnectAttempts) {
+        const delay = Math.min(1000 * Math.pow(2, this.reconnectAttempts), 30000);
+        this.reconnectAttempts++;
+        console.log(`Attempting to reconnect in ${delay}ms...`);
+        setTimeout(() => this.setupWebSocket(), delay);
+      }
+    };
+
+    this.websocket.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+  }
+
+  handleWebSocketMessage(message) {
+    switch (message.type) {
+      case 'registered':
+        this.clientId = message.payload.clientId;
+        break;
+        
+      case 'editing_status':
+        this.updateEditingStatus(message.payload.articleId, message.payload.editors);
+        break;
+        
+      case 'article_update':
+        this.handleArticleUpdate(message.payload.action, message.payload.article);
+        break;
+        
+      case 'moderator_notification':
+        if (this.currentUser?.role === 'moderator') {
+          this.showMessage(`Moderator: ${message.payload.message}`, 'info');
+        }
+        break;
+    }
+  }
+
+  registerWebSocketClient() {
+    if (this.websocket && this.websocket.readyState === WebSocket.OPEN && this.currentUser) {
+      this.websocket.send(JSON.stringify({
+        type: 'register',
+        payload: { user: this.currentUser }
+      }));
+    }
+  }
+
+  startEditing(articleId) {
+    if (!this.clientId || !this.websocket || this.websocket.readyState !== WebSocket.OPEN) {
+      this.showMessage('Connection error. Please refresh and try again.', 'error');
+      return;
+    }
+
+    this.currentlyEditing = articleId;
+    
+    this.websocket.send(JSON.stringify({
+      type: 'start_editing',
+      payload: { clientId: this.clientId, articleId }
+    }));
+  }
+
+  stopEditing() {
+    if (!this.currentlyEditing || !this.clientId) return;
+    
+    if (this.websocket && this.websocket.readyState === WebSocket.OPEN) {
+      this.websocket.send(JSON.stringify({
+        type: 'stop_editing',
+        payload: { clientId: this.clientId, articleId: this.currentlyEditing }
+      }));
+    }
+    
+    this.currentlyEditing = null;
+  }
+
+  updateEditingStatus(articleId, editors) {
+    const indicator = document.getElementById(`editing-indicator-${articleId}`);
+    const editorsList = document.getElementById(`editors-list-${articleId}`);
+    
+    if (indicator && editorsList) {
+      if (editors.length > 0) {
+        indicator.style.display = 'block';
+        editorsList.innerHTML = editors.map(editor => 
+          `<div class="editor">${this.escapeHtml(editor.username)} (since ${this.formatTime(editor.startedAt)})</div>`
+        ).join('');
+      } else {
+        indicator.style.display = 'none';
+      }
+    }
+  }
+
+  handleArticleUpdate(action, article) {
+    switch (action) {
+      case 'created':
+      case 'updated':
+      case 'approved':
+      case 'rejected':
+        this.loadArticles();
+        if (this.currentView === 'moderate') {
+          this.loadPendingArticles();
+        }
+        break;
+    }
   }
 
   async makeRequest(url, options = {}) {
@@ -108,6 +271,18 @@ class ArticleService {
       this.updateAuthUI();
       this.showMessage('Login successful', 'success');
       
+      if (this.websocket) {
+        if (this.websocket.readyState === WebSocket.OPEN) {
+          this.registerWebSocketClient();
+        } else if (this.websocket.readyState === WebSocket.CONNECTING) {
+          // Will register when connection opens
+        } else {
+          this.setupWebSocket();
+        }
+      } else {
+        this.setupWebSocket();
+      }
+      
       document.getElementById('username').value = '';
       document.getElementById('password').value = '';
     } catch (error) {
@@ -117,6 +292,10 @@ class ArticleService {
 
   async logout() {
     try {
+      if (this.currentlyEditing) {
+        this.stopEditing();
+      }
+      
       await this.makeRequest('/auth/logout', { method: 'POST' });
       this.currentUser = null;
       this.updateAuthUI();
@@ -185,7 +364,7 @@ class ArticleService {
     }
 
     container.innerHTML = articles.map(article => `
-      <div class="article-card">
+      <div class="article-card" data-article-id="${article.id}">
         <h3 class="article-title">${this.escapeHtml(article.title)}</h3>
         <div class="article-meta">
           <span>By: ${this.escapeHtml(article.author)}</span>
@@ -193,6 +372,10 @@ class ArticleService {
           ${article.updatedAt !== article.createdAt ? 
             `<span>Updated: ${this.formatDate(article.updatedAt)}</span>` : ''
           }
+        </div>
+        <div id="editing-indicator-${article.id}" class="editing-indicator" style="display: none;">
+          <div>Currently being edited by:</div>
+          <div class="editors-list" id="editors-list-${article.id}"></div>
         </div>
         <div class="article-content">${this.escapeHtml(article.content)}</div>
         ${this.currentUser ? `
@@ -327,6 +510,8 @@ class ArticleService {
       }
 
       this.currentArticle = articleId;
+      this.startEditing(articleId);
+      
       document.getElementById('edit-title').value = article.title;
       document.getElementById('edit-content').value = article.content;
       this.updateCharCount('edit');
@@ -363,8 +548,13 @@ class ArticleService {
   }
 
   showView(viewName) {
+    this.currentView = viewName;
     const views = document.querySelectorAll('.view');
     const navBtns = document.querySelectorAll('.nav-btn');
+    
+    if (this.currentlyEditing && viewName !== 'edit') {
+      this.stopEditing();
+    }
     
     views.forEach(view => view.style.display = 'none');
     navBtns.forEach(btn => btn.classList.remove('active'));
@@ -425,6 +615,14 @@ class ArticleService {
       year: 'numeric',
       month: 'short',
       day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  }
+
+  formatTime(dateString) {
+    const date = new Date(dateString);
+    return date.toLocaleTimeString('en-US', {
       hour: '2-digit',
       minute: '2-digit'
     });
