@@ -1,0 +1,23 @@
+
+{
+  "name": "article-service",
+  "version": "1.0.0",
+  "description": "Article management service with moderation system",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "lint": "eslint *.js public/*.js",
+    "lint:fix": "eslint *.js public/*.js --fix"
+  },
+  "keywords": ["articles", "moderation", "spa", "ajax"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5"
+  },
+  "devDependencies": {
+    "eslint": "^8.57.0"
+  }
+}
